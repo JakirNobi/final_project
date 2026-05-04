@@ -119,6 +119,7 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+.agents/
 
 # Spyder project settings
 .spyderproject
@@ -156,7 +157,7 @@ runs/
 # training/
 training/wider-face-1/
 training/*.pt
-
+tracking_pics/
 input/
 output/
 models/*.pt
