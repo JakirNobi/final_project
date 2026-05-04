@@ -1,18 +1,19 @@
 import os
 import cv2
 from ultralytics import YOLO
+from utils.denoiser import AdaptiveDenoiser
 
 class VideoTracker:
-    def __init__(self, model_path):
+    def __init__(self, model_path, noise_threshold=15.0):
         """
-        Initializes the tracker with the specified YOLO model.
+        Initializes the tracker with the specified YOLO model and adaptive denoiser.
         """
         self.model = YOLO(model_path)
+        self.denoiser = AdaptiveDenoiser(noise_threshold=noise_threshold)
 
     def process_video(self, input_path, output_path, crop_dir="tracking_pics"):
         """
-        Reads a video, applies tracking on each frame, and saves the output.
-        Also crops and saves detected bounding boxes into crop_dir.
+        Reads a video, applies adaptive denoising, and then YOLO tracking.
         """
         # Create the crop directory if it doesn't exist
         os.makedirs(crop_dir, exist_ok=True)
@@ -29,8 +30,9 @@ class VideoTracker:
         
         out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (frame_width, frame_height))
 
-        print(f"Starting tracking on {input_path}...")
+        print(f"Starting adaptive preprocessing and tracking on {input_path}...")
         frame_count = 0
+        track_counts = {} # Keep track of how many images saved per ID
 
         while cap.isOpened():
             ret, frame = cap.read()
@@ -39,8 +41,15 @@ class VideoTracker:
             
             frame_count += 1
 
-            # Run YOLO inference with tracking on the current frame
-            results = self.model.track(frame, persist=True, verbose=False)
+            # 1. Adaptive Denoising Preprocessing
+            processed_frame, noise_lvl, denoised, latency = self.denoiser.process_frame(frame)
+            
+            if frame_count % 30 == 0:
+                status = "Denoised" if denoised else "Skipped Denoising"
+                print(f"Frame {frame_count}: Noise={noise_lvl:.2f} | {status} | Latency={latency:.2f}ms")
+
+            # 2. Run YOLO inference with tracking on the processed frame
+            results = self.model.track(processed_frame, persist=True, verbose=False)
 
             # Crop and save the detected frames according to the bounding boxes
             if results[0].boxes.id is not None:
@@ -48,6 +57,11 @@ class VideoTracker:
                 track_ids = results[0].boxes.id.int().cpu().tolist()
                 
                 for box, track_id in zip(boxes, track_ids):
+                    # Check if we already have enough images for this ID
+                    count = track_counts.get(track_id, 0)
+                    if count >= 20:
+                        continue
+                    
                     x1, y1, x2, y2 = map(int, box)
                     
                     # Ensure coordinates are within frame bounds
@@ -59,6 +73,7 @@ class VideoTracker:
                         cropped_img = frame[y1:y2, x1:x2]
                         crop_filename = os.path.join(crop_dir, f"id_{track_id}_frame_{frame_count}.jpg")
                         cv2.imwrite(crop_filename, cropped_img)
+                        track_counts[track_id] = count + 1
 
             # Plot the tracking results on the frame
             annotated_frame = results[0].plot()
